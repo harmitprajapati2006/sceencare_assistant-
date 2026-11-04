@@ -1,159 +1,186 @@
-# Step1: Install and import dependencies
-import anthropic
-from dotenv import load_dotenv
-import os
 import base64
+import io
 import mimetypes
-# Step2: Create API keys & Client
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+from dotenv import load_dotenv
+from PIL import Image
 
 load_dotenv()
 
 
-def encode_file(filepath):
-    with open(filepath, "rb") as file:
-        return base64.b64encode(file.read()).decode("utf-8")
+def prepare_image_for_llm(filepath, max_dimension=1024, quality=85):
+    """
+    Downsamples and compresses images to avoid HTTP 413 (Payload Too Large) errors
+    while preserving high visual clarity for dermatological analysis.
+    """
+    with Image.open(filepath) as img:
+        # Convert RGBA / P / Grayscale to RGB for clean JPEG compression
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+
+        # Downsample proportionally if image is larger than max_dimension
+        img.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
+
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=quality, optimize=True)
+        encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        return encoded, "image/jpeg"
 
 
-def get_media_type(filepath, fallback):
-    media_type, _ = mimetypes.guess_type(filepath)
-    return media_type or fallback
+def extract_frame_from_video(video_filepath):
+    """
+    Extracts a representative frame from a video using ffmpeg.
+    Returns the path to a temporary JPEG frame.
+    """
+    temp_frame = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+    temp_frame.close()
+    out_path = temp_frame.name
+
+    try:
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-ss", "00:00:00.500",
+            "-i", str(video_filepath),
+            "-vframes", "1",
+            "-q:v", "2",
+            out_path,
+        ]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if res.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            return out_path
+    except Exception as e:
+        print(f"Warning: ffmpeg frame extraction failed: {e}")
+
+    return None
+
+
+def clean_doctor_text(text):
+    """
+    Removes markdown asterisks, hashes, and formatting so the text
+    reads naturally through Text-To-Speech.
+    """
+    if not text:
+        return ""
+    cleaned = text.replace("**", "").replace("*", "").replace("#", "").replace("`", "")
+    return cleaned.strip()
 
 
 def brain_of_the_doctor(patient_text, image_filepath=None, video_filepath=None):
-
+    """
+    Analyzes patient symptoms and visuals (image or video).
+    Supports Groq Vision (e.g. qwen/qwen3.8-27b) and MiniMax (Anthropic endpoint).
+    """
+    groq_api_key = os.environ.get("GROQ_API_KEY")
     minimax_api_key = os.environ.get("MINIMAX_API_KEY")
 
+    if not groq_api_key and not minimax_api_key:
+        raise ValueError(
+            "Neither GROQ_API_KEY nor MINIMAX_API_KEY was found in environment. "
+            "Please check your .env file."
+        )
+
+    patient_description = (patient_text or "").strip()
+    if not patient_description:
+        patient_description = "The patient has not provided a spoken description, but has submitted visual media for assessment."
+
     prompt = (
-    "You are a confident, natural doctor specializing in skin care. Speak with the reassurance, clarity, and authority of a real doctor. "
-    "Limit your entire response to two or three sentences maximum. "
-    "If the patient has not provided a video and only an image, your absolute priority is to ask them to provide a video first because mention that you need more details and you need a video showing the problem. "
-    "Do not use any special characters, symbols, asterisks, or markdown formatting in your response because it will be converted directly to audio.\n\n"
-    f"Patient text: {patient_text}"
-)
-
-    if video_filepath:
-        media_content = {
-            "type": "video",
-            "source": {
-                "type": "base64",
-                "media_type": get_media_type(video_filepath, "video/mp4"),
-                "data": encode_file(video_filepath),
-            },
-        }
-    else:
-        media_content = {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": get_media_type(image_filepath, "image/png"),
-                "data": encode_file(image_filepath),
-            },
-        }
-
-    client = anthropic.Anthropic(
-        api_key=minimax_api_key,
-        base_url=os.environ.get("MINIMAX_BASE_URL", "https://api.minimax.io/anthropic"),
-    )
-    response = client.messages.create(
-        model=os.environ.get("MINIMAX_MODEL", "MiniMax-M3"),
-        max_tokens=1000,
-        messages=[
-            {
-                "role": "user",
-                "content": [media_content, {"type": "text", "text": prompt}],
-            }
-        ],
+        "You are an empathetic, confident medical doctor specializing in dermatology and skin care. "
+        "Review the patient's concern and the provided visual examination. "
+        "Limit your entire response to two or three clear, reassuring sentences maximum. "
+        "Provide professional guidance and recommendations on next steps. "
+        "Do not use markdown, asterisks, bullet points, or special characters because your response will be read aloud."
+        f"\n\nPatient complaint: {patient_description}"
     )
 
-    doctors_response_in_text = response.content[0].text
+    extracted_temp_frame = None
+    target_image_path = None
 
-    return doctors_response_in_text
+    if image_filepath and os.path.exists(image_filepath):
+        target_image_path = image_filepath
+    elif video_filepath and os.path.exists(video_filepath):
+        extracted_temp_frame = extract_frame_from_video(video_filepath)
+        if extracted_temp_frame:
+            target_image_path = extracted_temp_frame
 
+    # Use Groq if available (default when GROQ_API_KEY is configured in .env)
+    use_groq = bool(groq_api_key) and (not minimax_api_key or os.environ.get("VISION_PROVIDER") == "groq")
 
-"""api_key=os.environ.get("MINIMAX_API_KEY")
-base_url="https://api.minimax.io/anthropic"
+    try:
+        if use_groq:
+            from groq import Groq
 
-client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
+            client = Groq(api_key=groq_api_key)
+            model = os.environ.get("GROQ_VISION_MODEL", "qwen/qwen3.8-27b")
 
-# Step3: Create message
+            user_content = [{"type": "text", "text": prompt}]
 
-messages = [
-    {
-        "role": "user",
-        "content": [
-            {
-                "type": "text",
-                "text": "Hello, what can you help me with?",
-            }
-        ],
-    }
-]
+            if target_image_path:
+                encoded_image, mime_type = prepare_image_for_llm(target_image_path)
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{encoded_image}"
+                    },
+                })
 
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": user_content}],
+                max_tokens=600,
+            )
+            raw_text = response.choices[0].message.content
 
-# Image messages 
-folder = os.path.dirname(__file__)
-image_path = os.path.join(folder, "sample-image.png")
+        else:
+            # MiniMax Anthropic-compatible client
+            import anthropic
 
+            client = anthropic.Anthropic(
+                api_key=minimax_api_key,
+                base_url=os.environ.get("MINIMAX_BASE_URL", "https://api.minimax.io/anthropic"),
+            )
+            model = os.environ.get("MINIMAX_MODEL", "MiniMax-M3")
 
-with open(image_path, "rb") as file:
-        image_data = base64.b64encode(file.read()).decode("utf-8")
-image_messages = [
-    {
-        "role": "user",
-        "content": [
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/png",
-                    "data": image_data,
-                },
-            },
-            {
-                "type": "text",
-                "text": "What do you see in this image?",
-            },
-        ],
-    }
-]
+            content_items = []
+            if target_image_path:
+                encoded_image, mime_type = prepare_image_for_llm(target_image_path)
+                content_items.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": mime_type,
+                        "data": encoded_image,
+                    },
+                })
+            elif video_filepath and os.path.exists(video_filepath):
+                with open(video_filepath, "rb") as f:
+                    v_b64 = base64.b64encode(f.read()).decode("utf-8")
+                content_items.append({
+                    "type": "video",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "video/mp4",
+                        "data": v_b64,
+                    },
+                })
 
-# Video Messages
+            content_items.append({"type": "text", "text": prompt})
 
-video_path = os.path.join(folder, "test-video.mp4")
-with open(video_path, "rb") as file:
-    video_data = base64.b64encode(file.read()).decode("utf-8")
+            response = client.messages.create(
+                model=model,
+                max_tokens=600,
+                messages=[{"role": "user", "content": content_items}],
+            )
+            raw_text = response.content[0].text
 
-video_messages = [
-    {
-        "role": "user",
-        "content": [
-            {
-                "type": "video",
-                "source": {
-                    "type": "base64",
-                    "media_type": "video/mp4",
-                    "data": video_data,
-                },
-            },
-            {
-                "type": "text",
-                "text": "What is happening in this video?",
-            },
-        ],
-    }
-]
+        return clean_doctor_text(raw_text)
 
-
-# Step4: Send Message
-
-response = client.messages.create(
-    model="MiniMax-M3",
-    max_tokens=1000,
-    messages=video_messages,
-)
-
-
-
-# Step5: Print Response
-
-print(response.content[0].text)"""
+    finally:
+        if extracted_temp_frame and os.path.exists(extracted_temp_frame):
+            try:
+                os.remove(extracted_temp_frame)
+            except OSError:
+                pass

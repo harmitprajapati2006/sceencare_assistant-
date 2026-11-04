@@ -32,14 +32,9 @@ logging.basicConfig(
 BASE_DIR = Path(__file__).resolve().parent
 
 load_dotenv(BASE_DIR / ".env")
+load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
-if not GROQ_API_KEY:
-    raise ValueError(
-        "GROQ_API_KEY not found. "
-        "Add GROQ_API_KEY=your_key_here to your .env file."
-    )
 
 
 # --------------------------------------------------
@@ -309,9 +304,15 @@ def record_audio(
 # --------------------------------------------------
 
 def transcribe_patient_voice(audio_filepath):
+    api_key = os.getenv("GROQ_API_KEY") or GROQ_API_KEY
+    if not api_key:
+        raise ValueError(
+            "GROQ_API_KEY not found. "
+            "Add GROQ_API_KEY=your_key_here to your .env file."
+        )
 
     client = Groq(
-        api_key=GROQ_API_KEY
+        api_key=api_key
     )
 
     audio_path = Path(audio_filepath)
@@ -335,7 +336,9 @@ def transcribe_patient_voice(audio_filepath):
             response_format="text"
         )
 
-    return transcription
+    if hasattr(transcription, "text"):
+        return transcription.text.strip()
+    return str(transcription).strip()
 
 
 # --------------------------------------------------

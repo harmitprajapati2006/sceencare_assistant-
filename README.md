@@ -95,3 +95,4 @@ Open the local URL displayed in your terminal (usually `http://127.0.0.1:7860`) 
 
 ## Disclaimer
 *This tool is intended for informational and demonstrative purposes only and does not constitute official medical advice, diagnosis, or treatment. Always consult a certified healthcare professional or dermatologist for medical concerns.*
+

@@ -460,13 +460,28 @@ def process_inputs(audio_filepath, image_filepath, video_filepath):
     if not image_filepath and not video_filepath:
         raise gr.Error("Please upload a skin image or video before analysis.")
 
-    patient_text = transcribe_patient_voice(audio_filepath)
-    doctor_text = brain_of_the_doctor(
-        patient_text=patient_text,
-        image_filepath=image_filepath,
-        video_filepath=video_filepath,
-    )
-    doctor_audio = convert_text_to_doctor_audio(doctor_text)
+    try:
+        patient_text = transcribe_patient_voice(audio_filepath)
+        if not patient_text or not str(patient_text).strip():
+            patient_text = "No clear spoken description was detected in the audio recording."
+        else:
+            patient_text = str(patient_text).strip()
+    except Exception as e:
+        raise gr.Error(f"Speech transcription failed: {e}")
+
+    try:
+        doctor_text = brain_of_the_doctor(
+            patient_text=patient_text,
+            image_filepath=image_filepath,
+            video_filepath=video_filepath,
+        )
+    except Exception as e:
+        raise gr.Error(f"Doctor analysis failed: {e}")
+
+    try:
+        doctor_audio = convert_text_to_doctor_audio(doctor_text)
+    except Exception as e:
+        raise gr.Error(f"Doctor voice generation failed: {e}")
 
     return patient_text, doctor_text, str(Path(doctor_audio))
 

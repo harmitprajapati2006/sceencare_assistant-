@@ -1,16 +1,28 @@
-# Step1: Create API keys
-
-# Step2: Create Client and send request
-from deepgram import DeepgramClient
 import os
+import platform
+import subprocess
+import uuid
 from pathlib import Path
 from dotenv import load_dotenv
+from deepgram import DeepgramClient
+
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_DOCTOR_AUDIO = BASE_DIR / "doctor_response.mp3"
-def convert_text_to_doctor_audio(text, output_filepath=DEFAULT_DOCTOR_AUDIO):
+
+
+def convert_text_to_doctor_audio(text, output_filepath=None):
     deepgram_api_key = os.environ.get("DEEPGRAM_API_KEY")
+    if not deepgram_api_key:
+        raise ValueError("DEEPGRAM_API_KEY is not set. Please add it to your .env file.")
+
+    if output_filepath is None:
+        # Use unique filename to prevent file lock conflicts on Windows
+        output_filepath = BASE_DIR / f"doctor_response_{uuid.uuid4().hex[:8]}.mp3"
+    else:
+        output_filepath = Path(output_filepath)
+
     deepgram = DeepgramClient(api_key=deepgram_api_key)
     audio = deepgram.speak.v1.audio.generate(
         text=text,
@@ -18,15 +30,13 @@ def convert_text_to_doctor_audio(text, output_filepath=DEFAULT_DOCTOR_AUDIO):
         encoding="mp3",
     )
 
-    output_filepath = Path(output_filepath)
     with output_filepath.open("wb") as file:
         for chunk in audio:
             file.write(chunk)
 
     return output_filepath
 
-import subprocess
-import platform
+
 def play_audio(audio_filepath):
     audio_filepath = str(audio_filepath)
 
@@ -38,31 +48,8 @@ def play_audio(audio_filepath):
         subprocess.run(["xdg-open", audio_filepath], check=False)
 
 
-text = "Hi, my name is AI with Hassan, who are you?. I am very happy."
-api_key = os.environ.get("DEEPGRAM_API_KEY")
-deepgram = DeepgramClient(api_key=api_key)
-audio = deepgram.speak.v1.audio.generate(
-    text=text,
-    model="aura-2-thalia-en",
-    encoding="mp3",
-)
-# Step3: Save audio
-from pathlib import Path
-
-audio_file="test-output.mp3"
-audio_path = Path(__file__).with_name(audio_file)
-with audio_path.open("wb") as file:
-    for chunk in audio:
-        file.write(chunk)
-
-# Step4: Play audio
-import platform
-import subprocess
-
-
-if platform.system() == "Darwin":  # macOS
-    subprocess.run(["afplay", str(audio_path)])
-elif platform.system() == "Windows":
-    os.startfile(audio_path)
-else:  # Linux
-    subprocess.run(["xdg-open", str(audio_path)])
+if __name__ == "__main__":
+    test_text = "Hi, my name is AI Skin Specialist. I am here to assist you."
+    print("Testing doctor voice synthesis...")
+    output = convert_text_to_doctor_audio(test_text)
+    print(f"Audio generated at: {output}")
