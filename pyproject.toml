@@ -1,0 +1,26 @@
+[project]
+name = "medicare-assistant"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Harmit", email = "harmitprajapati2006@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "anthropic>=1.11.0",
+    "deepgram-sdk>=7.11.0",
+    "gradio>=6.31.0",
+    "groq>=1.7.0",
+    "pillow>=12.3.0",
+    "pydub>=0.25.1",
+    "python-dotenv>=1.2.4",
+    "speechrecognition>=3.17.0",
+]
+
+[project.scripts]
+medicare-assistant = "medicare_assistant:main"
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
